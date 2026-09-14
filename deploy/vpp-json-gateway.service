@@ -1,3 +1,6 @@
+# Copyright 2026 David Cornejo
+# SPDX-License-Identifier: Apache-2.0
+
 [Unit]
 Description=VPP JSON Redis gateway
 After=network.target redis-server.service vpp.service

@@ -1,3 +1,8 @@
+<!--
+Copyright 2026 David Cornejo
+SPDX-License-Identifier: Apache-2.0
+-->
+
 # Local gateway example
 
 This example runs Redis on `127.0.0.1:6389`, a gateway with 100 mock interfaces,

@@ -1,3 +1,6 @@
+# Copyright 2026 David Cornejo
+# SPDX-License-Identifier: Apache-2.0
+
 cmake_minimum_required(VERSION 3.22)
 project(vpp_json_gateway VERSION 0.1.0 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
@@ -57,3 +60,5 @@ if(BUILD_TESTING)
   add_test(NAME schema COMMAND schema_test)
 endif()
 install(TARGETS vpp-json-gateway gateway-client RUNTIME DESTINATION bin)
+
+install(FILES LICENSE NOTICE DESTINATION share/doc/vpp-json-gateway)

@@ -1,3 +1,6 @@
+// Copyright 2026 David Cornejo
+// SPDX-License-Identifier: Apache-2.0
+
 #include <fstream>
 #include <iostream>
 #include <set>
@@ -65,7 +68,9 @@ int main(int argc, char** argv) {
     modules.insert(module);
   }
   std::ofstream out(argv[1]);
-  out << "// Generated from VPP API schemas. Do not edit.\n#include "
+  out << "// Copyright 2026 David Cornejo\n// SPDX-License-Identifier: "
+         "Apache-2.0\n// Generated from VPP API schemas. Do not "
+         "edit.\n#include "
          "<cstring>\n#include <cstddef>\n#include \"src/generated_api.h\"\n";
   for (const auto& module : modules) {
     out << "#include <vapi/" << module << ".api.vapi.h>\n";

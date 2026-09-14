@@ -1,3 +1,6 @@
+// Copyright 2026 David Cornejo
+// SPDX-License-Identifier: Apache-2.0
+
 #include "src/redis_transport.h"
 
 #include <cstdlib>

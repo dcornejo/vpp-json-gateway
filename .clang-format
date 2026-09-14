@@ -1,2 +1,5 @@
+# Copyright 2026 David Cornejo
+# SPDX-License-Identifier: Apache-2.0
+
 BasedOnStyle: Google
 InsertBraces: true

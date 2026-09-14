@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright 2026 David Cornejo
+# SPDX-License-Identifier: Apache-2.0
+
 """Exercise a disposable, unprivileged VPP instance; no host interfaces touched."""
 import argparse
 import json

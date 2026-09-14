@@ -1,4 +1,7 @@
 #!/bin/sh
+# Copyright 2026 David Cornejo
+# SPDX-License-Identifier: Apache-2.0
+
 set -eu
 cd "$(dirname "$0")"
 . ./server.env

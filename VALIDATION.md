@@ -1,3 +1,8 @@
+<!--
+Copyright 2026 David Cornejo
+SPDX-License-Identifier: Apache-2.0
+-->
+
 # Validation record
 
 Implementation target: VPP 26.06, Ubuntu 26.04.

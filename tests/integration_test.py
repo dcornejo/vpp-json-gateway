@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright 2026 David Cornejo
+# SPDX-License-Identifier: Apache-2.0
+
 """Real Redis integration checks; uses only Python's standard library."""
 import argparse
 import hashlib

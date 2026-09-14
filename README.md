@@ -1,3 +1,8 @@
+<!--
+Copyright 2026 David Cornejo
+SPDX-License-Identifier: Apache-2.0
+-->
+
 # VPP JSON gateway
 
 A working first implementation in C++20, using the Google C++ Style Guide.
@@ -336,7 +341,7 @@ python3 tests/integration_test.py \
   --client "$PWD/build/gateway-client" \
   --redis-server "$(command -v redis-server)"
 clang-format --dry-run --Werror src/*.cc src/*.h tools/*.cc tests/*.cc
-cpplint --repository=.. --filter=-legal/copyright src/*.cc src/*.h tools/*.cc tests/*.cc
+cpplint --repository=.. src/*.cc src/*.h tools/*.cc tests/*.cc
 ```
 
 Core checks cover malformed/deep envelopes, symbolic state, bounded output with
@@ -398,3 +403,8 @@ for a C++ application.
 See [example/README.md](example/README.md) for a local Redis configuration,
 separate test credentials and ACLs, gateway startup script, and a C++ client
 that registers, queries, streams responses, and changes an interface by name.
+
+## License
+
+Copyright 2026 David Cornejo. Licensed under the [Apache License 2.0](LICENSE).
+See [NOTICE](NOTICE) for attribution.

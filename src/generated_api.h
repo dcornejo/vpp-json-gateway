@@ -1,3 +1,6 @@
+// Copyright 2026 David Cornejo
+// SPDX-License-Identifier: Apache-2.0
+
 #ifndef VPP_JSON_GATEWAY_SRC_GENERATED_API_H_
 #define VPP_JSON_GATEWAY_SRC_GENERATED_API_H_
 
