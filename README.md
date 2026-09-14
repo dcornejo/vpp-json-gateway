@@ -110,8 +110,8 @@ stable across that pair of calls. Dumps are not advertised as snapshots.
 
 The C++ build-time generator reads installed `.api.json` files, emits native
 VAPI wrappers and embeds the matching JSON catalog. The default VPP 26.06
-modules are `interface`, `vlib`, and `ip`: 85 of 93 services are supported
-(36 interface, 9 vlib, and 40 IP). Unsupported services remain visible with
+modules are `interface`, `vlib`, and `ip`: 91 of 93 services are supported
+(36 interface, 9 vlib, and 46 IP). Unsupported services remain visible with
 reasons in discovery.
 Compilation checks native payload sizes against schema sizes; runtime checks
 verify that VPP offers the matching message schemas. The mock backend does not
@@ -152,7 +152,7 @@ their cached selection; use `-DVPP_API_MODULES='interface;vlib;ip'` to expand on
 Other installed modules can be selected but require their own validation.
 
 Replies can contain a trailing variable array of fixed-size elements or a
-trailing string. VAPI verifies received lengths before the callback; the wrapper
+trailing string, including inside trailing nested scalar structs. VAPI verifies received lengths before the callback; the wrapper
 checks the 1 MiB native budget before copying or decoding. Array counts remain
 internal. `vpp.show_threads` is a live-tested variable-array example, and
 `vpp.ip_table_add_del` / `vpp.ip_table_dump` are live-tested IP module examples.
@@ -164,8 +164,15 @@ completion. Pagination shares a 30-second dispatch deadline and a 1,024-page
 cap; a terminal VPP error produces `error`, even after partial details. Like
 other dumps, it is not a snapshot. Caller-supplied cursors are rejected.
 
-Event subscriptions, nested variable reply layouts, ambiguous unions, and
-stream services without an implemented continuation policy remain unsupported.
+Route dumps and lookups now include nested variable path arrays. FIB next-hop
+address unions select IPv4 or IPv6 from the enclosing path protocol; non-IP
+next-hop protocols fail explicitly until dedicated conversion is provided.
+Arrays of variable-sized elements and non-trailing variable members remain
+unsupported. Event subscriptions, ambiguous unions, and stream services without
+an implemented continuation policy also remain unsupported. In the default
+catalog, `want_interface_events` and `ip_path_mtu_get` are the two services
+without generated bindings. Support counts describe layouts; individual values
+such as unsupported non-IP next hops can still produce a conversion error.
 The live fixture exercises TX completion errors; variable TX details are tested
 through generated callbacks because the fixture has no hardware TX queues.
 Hardware-backed multi-page TX traversal still needs live validation.

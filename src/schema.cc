@@ -840,6 +840,21 @@ Status Schema::Convert(const std::string& name, Json* value,
           !discriminator.empty() && object.contains(discriminator)
               ? &object[discriminator]
               : nullptr;
+      Json protocol;
+      if (name == "vl_api_fib_path_t" && field_name == "nh") {
+        selected = object.contains("proto") ? &object["proto"] : nullptr;
+      }
+      if (name == "vl_api_fib_path_nh_t" && field_name == "address" && tag) {
+        if (*tag == "FIB_API_PATH_NH_PROTO_IP4") {
+          protocol = "ADDRESS_IP4";
+        } else if (*tag == "FIB_API_PATH_NH_PROTO_IP6") {
+          protocol = "ADDRESS_IP6";
+        } else {
+          return {"unsupported_type",
+                  "Non-IP FIB next-hop address requires a dedicated adapter"};
+        }
+        selected = &protocol;
+      }
       status = Convert(field_type, &item, symbols, encoded, decoded, selected,
                        depth + 1);
     }

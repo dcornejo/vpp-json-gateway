@@ -171,3 +171,18 @@ is implemented but not live-validated; its generated detail/completion callbacks
 are tested with synthetic native payloads. Event subscriptions and nested
 variable reply layouts remain explicitly unsupported. Coverage counts describe
 supported bindings, not exhaustive behavioral validation of every operation.
+
+## Nested variable replies (2026-09-14)
+
+Support expands to 91 of 93 default services through recursive sizing of
+trailing scalar structs containing variable arrays/strings. Live tests create
+IPv4 and IPv6 routes in disposable tables, validate route dump/lookup path arrays,
+check next-hop union selection against the enclosing protocol, and remove the
+routes/tables. The existing full live suite also passes. Evidence:
+`validation/nested-vpp.log`.
+
+Native callback tests check both empty and one-element nested route arrays.
+Portable sanitizer suites pass. Variable-sized array elements and non-trailing
+variable layouts remain unsupported; non-IP FIB next hops are explicitly
+rejected. The six newly supported layouts are not all behaviorally tested:
+live coverage focuses on route dumps and lookups, not multicast/punt behavior.

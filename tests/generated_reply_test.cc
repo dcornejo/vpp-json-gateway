@@ -68,6 +68,35 @@ int main() {
   Check(stream.done && stream.retval == -165 && stream.reply == bytes,
         "Continuation completion is retained for pagination");
 
+  // Nested route prefixes contribute fixed bytes; the tail paths array adds
+  // variable bytes even though it is inside the route member.
+  Json route = {{"table_id", 0},
+                {"stats_index", 0},
+                {"prefix", "192.0.2.0/24"},
+                {"paths", Json::array()}};
+  Check(schema
+            .Encode("ip_route_lookup_reply", {{"retval", 0}, {"route", route}},
+                    {}, &bytes)
+            .ok(),
+        "Encode nested empty route reply");
+  vpp_json::GeneratedCall nested;
+  vpp_json::Reply_ip_route_lookup(
+      nullptr, &nested, VAPI_OK, true,
+      reinterpret_cast<vapi_payload_ip_route_lookup_reply*>(bytes.data()));
+  Check(nested.done && nested.reply == bytes,
+        "Nested empty array callback length");
+  std::vector<uint8_t> one_path(
+      sizeof(vapi_payload_ip_route_lookup_reply) +
+      sizeof((static_cast<vapi_payload_ip_route_lookup_reply*>(nullptr))
+                 ->route.paths[0]));
+  auto* payload =
+      reinterpret_cast<vapi_payload_ip_route_lookup_reply*>(one_path.data());
+  payload->route.n_paths = 1;
+  vpp_json::GeneratedCall nonempty;
+  vpp_json::Reply_ip_route_lookup(nullptr, &nonempty, VAPI_OK, true, payload);
+  Check(nonempty.done && nonempty.reply == one_path,
+        "Nested path bytes are included in callback length");
+
   // The generated callback must reject an over-budget count before copying.
   vapi_payload_show_threads_reply oversized{};
   oversized.count = UINT32_MAX;

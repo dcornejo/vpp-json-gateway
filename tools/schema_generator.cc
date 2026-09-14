@@ -40,14 +40,25 @@ bool Supported(const Schema& schema, const std::string& name,
   }
   return true;
 }
-// Support a trailing variable array of fixed-size elements, or a trailing
-// string. VAPI verifies the received message length before invoking callbacks.
-bool ReplyLayout(const Schema& schema, const std::string& name) {
+// Follow trailing scalar structs to a variable array/string. Arrays of
+// variable-sized elements remain unsupported because native indexing is unsafe.
+bool ReplyTail(const Schema& schema, const std::string& name,
+               const std::string& path, std::string* count,
+               std::string* element, int depth = 0) {
+  if (depth > 32) {
+    return false;
+  }
   if (!schema.Variable(name)) {
     return true;
   }
   const Json* type = schema.Type(name);
-  if (!type || (*type)["kind"] != "struct") {
+  if (!type) {
+    return false;
+  }
+  if ((*type)["kind"] == "alias" && !type->contains("length")) {
+    return ReplyTail(schema, (*type)["type"], path, count, element, depth + 1);
+  }
+  if ((*type)["kind"] != "struct") {
     return false;
   }
   const auto& fields = (*type)["fields"];
@@ -64,8 +75,14 @@ bool ReplyLayout(const Schema& schema, const std::string& name) {
     if (i + 1 != fields.size()) {
       return false;
     }
+    std::string member = path + field["name"].get<std::string>();
     if (child == "string") {
+      *count = member + ".length";
+      *element = "1";
       return true;
+    }
+    if (!field.contains("length")) {
+      return ReplyTail(schema, child, member + ".", count, element, depth + 1);
     }
     if (schema.Variable(child) || !field.contains("count")) {
       return false;
@@ -74,12 +91,18 @@ bool ReplyLayout(const Schema& schema, const std::string& name) {
       if (fields[j]["name"] == field["count"] &&
           (fields[j]["type"] == "u8" || fields[j]["type"] == "u16" ||
            fields[j]["type"] == "u32")) {
+        *count = path + field["count"].get<std::string>();
+        *element = "sizeof(" + member + "[0])";
         return true;
       }
     }
     return false;
   }
   return false;
+}
+bool ReplyLayout(const Schema& schema, const std::string& name) {
+  std::string count, element;
+  return ReplyTail(schema, name, "reply->", &count, &element);
 }
 void Callback(std::ostream& out, const Schema& schema,
               const std::string& function, const std::string& reply, bool items,
@@ -95,17 +118,10 @@ void Callback(std::ostream& out, const Schema& schema,
       << ", \"Schema/native reply layout mismatch\");\n size_t size = "
          "sizeof(*reply);\n";
   if (schema.Variable(reply)) {
-    const auto& field = (*schema.Type(reply))["fields"].back();
-    std::string name = field["name"];
-    if (field["type"] == "string") {
-      out << " const uint64_t count = reply->" << name
-          << ".length;\n constexpr size_t element = 1;\n";
-    } else {
-      out << " const uint64_t count = reply->"
-          << field["count"].get<std::string>()
-          << ";\n constexpr size_t element = sizeof(reply->" << name
-          << "[0]);\n";
-    }
+    std::string count, element;
+    ReplyTail(schema, reply, "reply->", &count, &element);
+    out << " const uint64_t count = " << count
+        << ";\n constexpr size_t element = " << element << ";\n";
     out << " if (size > Limits::kNativePayloadBytes || count > "
            "(Limits::kNativePayloadBytes - size) / element) { state->status = "
            "{\"payload_too_large\", \"Native reply exceeds 1 MiB\"}; } else { "

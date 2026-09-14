@@ -190,6 +190,24 @@ plugins {{ plugin default {{ disable }} }}
         tables = call(live, 'vpp.ip_table_dump')
         assert tables[-1]['type'] == 'complete', tables
         assert any(f['items'][0]['table']['table_id'] == 8123 for f in tables[:-1]), tables
+        cli('ip route add table 8123 198.51.100.0/24 via 192.0.2.2 loop0')
+        routes = call(live, 'vpp.ip_route_dump', {'table': table})
+        assert routes[-1]['type'] == 'complete', routes
+        route = next(f['items'][0]['route'] for f in routes[:-1] if f['items'][0]['route']['prefix'] == '198.51.100.0/24')
+        assert route['paths'] and 'n_paths' not in route, route
+        assert route['paths'][0]['nh']['address']['ip4'] == '192.0.2.2', route
+        lookup = call(live, 'vpp.ip_route_lookup', {'table_id': 8123, 'exact': 1, 'prefix': '198.51.100.0/24'})[-1]
+        assert lookup['type'] == 'result' and lookup['result']['route']['paths'], lookup
+        cli('ip route del table 8123 198.51.100.0/24 via 192.0.2.2 loop0')
+        table6 = {'table_id': 8124, 'is_ip6': True, 'name': 'gateway-test-v6'}
+        assert call(live, 'vpp.ip_table_add_del', {'table': table6})[-1]['type'] == 'result'
+        cli('ip route add table 8124 2001:db8:1::/64 via 2001:db8::2 loop0')
+        lookup6 = call(live, 'vpp.ip_route_lookup', {'table_id': 8124, 'exact': 1, 'prefix': '2001:db8:1::/64'})[-1]
+        assert lookup6['type'] == 'result', lookup6
+        assert lookup6['result']['route']['paths'][0]['nh']['address']['ip6'] == '2001:db8::2', lookup6
+        cli('ip route del table 8124 2001:db8:1::/64 via 2001:db8::2 loop0')
+        assert call(live, 'vpp.ip_table_add_del', {'is_add': False, 'table': table6})[-1]['type'] == 'result'
+        print('PASS nested route dump and lookup with variable paths and IPv4/IPv6 union decoding', flush=True)
         assert call(live, 'vpp.ip_table_add_del', {'is_add': False, 'table': table})[-1]['type'] == 'result'
         # A loopback has no hardware TX queue. The explicit completion error
         # must end the response instead of hanging or claiming an empty success.
