@@ -392,3 +392,9 @@ for a C++ application.
 - [VPP VAPI generated-binding implementation](https://github.com/FDio/vpp/blob/stable/2606/src/vpp-api/vapi/vapi_c_gen.py)
 - [VPP VAPI tests](https://github.com/FDio/vpp/blob/stable/2606/src/vpp-api/vapi/vapi_c_test.c)
 - [Redis Streams](https://redis.io/docs/latest/develop/data-types/streams/)
+
+## Complete runnable example
+
+See [example/README.md](example/README.md) for a local Redis configuration,
+separate test credentials and ACLs, gateway startup script, and a C++ client
+that registers, queries, streams responses, and changes an interface by name.

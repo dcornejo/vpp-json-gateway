@@ -1,0 +1,3 @@
+user default off
+user gateway on >test-gateway-redis-6bed932a ~vpp:* +@all
+user demo on >test-demo-redis-427fbd10 resetkeys -@all (+xadd ~vpp:register ~vpp:session:{demo:*}:requests) (+xrange +xdel ~vpp:bootstrap:demo ~vpp:session:{demo:*}:responses)
