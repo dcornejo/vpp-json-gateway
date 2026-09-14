@@ -3,7 +3,7 @@ Copyright 2026 David Cornejo
 SPDX-License-Identifier: Apache-2.0
 -->
 
-# VPP JSON gateway
+# VPP-JSON Redis gateway
 
 A working first implementation in C++20, using the Google C++ Style Guide.
 The live adapter targets **VPP 26.06 on Ubuntu 26.04**. The portable build
