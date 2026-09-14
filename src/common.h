@@ -19,6 +19,9 @@ struct Status {
 };
 struct Limits {
   static constexpr std::size_t kFrameBytes = 256 * 1024;
+  static constexpr std::size_t kRecordBytes = 16 * 1024 * 1024;
+  static constexpr std::size_t kParamsBytes = 16 * 1024 * 1024;
+  static constexpr std::size_t kNativePayloadBytes = 1024 * 1024;
   static constexpr std::size_t kSpoolBytes = 64 * 1024 * 1024;
   static constexpr std::size_t kUploadBytes = 64 * 1024 * 1024;
   static constexpr int kWindow = 32;
@@ -37,10 +40,25 @@ std::string Sha256(const std::string& data);
 bool EqualSecret(const std::string& a, const std::string& b);
 bool IsId(const Json& value);
 bool IsUnsigned(const Json& value, uint64_t maximum);
-Status ParseRequest(const std::string& text, Json* request);
+Status ParseRequest(const std::string& text, Json* request,
+                    std::size_t limit = Limits::kFrameBytes);
 Json Error(const std::string& id, const Status& status);
 Json Result(const std::string& id, const Json& value);
 Status WriteAtomic(const std::string& path, const std::string& data);
+
+// Reassembles one logical response at a time; callers validate wire sequence
+// numbers and acknowledge each fragment after accepting it.
+class ResponseAssembler {
+ public:
+  Status Accept(const Json& frame, Json* logical, bool* ready);
+
+ private:
+  std::string data_;
+  std::string id_;
+  std::string digest_;
+  uint64_t total_ = 0;
+  uint64_t record_ = 0;
+};
 
 // Disk-backed, bounded result stream. Always reserve space for a terminal
 // error.
@@ -58,6 +76,7 @@ class Spool {
 
  private:
   bool Write(Json frame, bool terminal);
+  bool WriteRecord(Json frame);
   std::string path_;
   std::string id_;
   int fd_ = -1;

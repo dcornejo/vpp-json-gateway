@@ -19,7 +19,7 @@
 
 namespace vpp_json {
 namespace {
-constexpr std::size_t kPayloadLimit = Limits::kFrameBytes;
+constexpr std::size_t kPayloadLimit = Limits::kNativePayloadBytes;
 Status Invalid(const std::string& message) {
   return {"invalid_params", message};
 }

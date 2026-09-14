@@ -235,12 +235,8 @@ Status TransferManager::Resolve(const std::string& session,
   if (manifest["committed"] != true) {
     return {"transfer_incomplete", "Commit before using params_ref"};
   }
-  // The adapter's JSON parameter limit remains independent of transport size.
-  // Large opaque transfers can be staged, but this initial API has small
-  // params.
-  if (manifest["total"].get<uint64_t>() > Limits::kFrameBytes) {
-    return {"payload_too_large",
-            "This adapter accepts at most 256 KiB of JSON parameters"};
+  if (manifest["total"].get<uint64_t>() > Limits::kParamsBytes) {
+    return {"payload_too_large", "JSON parameters exceed 16 MiB"};
   }
   std::ifstream file(path + ".data", std::ios::binary);
   std::string text((std::istreambuf_iterator<char>(file)),
@@ -248,7 +244,7 @@ Status TransferManager::Resolve(const std::string& session,
   Json envelope;
   status = ParseRequest(
       "{\"id\":\"transfer\",\"method\":\"resolve\",\"params\":" + text + "}",
-      &envelope);
+      &envelope, Limits::kParamsBytes + 128);
   if (!status.ok()) {
     return {"invalid_params",
             "Transfer must contain a JSON parameter object within the adapter "

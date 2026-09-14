@@ -1,6 +1,8 @@
 // Copyright 2026 David Cornejo
 // SPDX-License-Identifier: Apache-2.0
 
+#include <fcntl.h>
+#include <sys/socket.h>
 #include <vapi/interface.api.vapi.h>
 #include <vapi/vapi.h>
 
@@ -214,7 +216,34 @@ class VapiBackend final : public Backend {
         spool->Add(item);
       }
     };
+    // VAPI's Unix stream sender does not resume short writes. Use a bounded
+    // blocking send on this worker only, then restore nonblocking dispatch.
+    int fd = -1;
+    if (vapi_get_fd(context_, &fd) != VAPI_OK) {
+      return fail({"backend_unavailable", "VAPI socket unavailable"});
+    }
+    int flags = fcntl(fd, F_GETFL);
+    timeval previous{};
+    socklen_t previous_size = sizeof(previous);
+    timeval timeout{5, 0};
+    if (flags < 0 ||
+        getsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &previous, &previous_size) !=
+            0 ||
+        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout)) !=
+            0 ||
+        fcntl(fd, F_SETFL, flags & ~O_NONBLOCK) != 0) {
+      Reset();
+      return fail(
+          {"backend_unavailable", "Cannot configure bounded VAPI send"});
+    }
     auto rc = selected->send(context_, bytes, &call);
+    bool restored_flags = fcntl(fd, F_SETFL, flags) == 0;
+    bool restored_timeout = setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &previous,
+                                       sizeof(previous)) == 0;
+    if (!restored_flags || !restored_timeout) {
+      Reset();
+      return fail({"outcome_unknown", "Cannot restore VAPI socket after send"});
+    }
     if (rc != VAPI_OK) {
       Reset();
       return fail({"outcome_unknown",

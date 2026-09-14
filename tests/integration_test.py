@@ -4,6 +4,7 @@
 
 """Real Redis integration checks; uses only Python's standard library."""
 import argparse
+import base64
 import hashlib
 import json
 import os
@@ -162,13 +163,13 @@ def main():
             print('PASS multi-frame dump, sequence integrity and slow-client isolation')
 
             transfer = 'upload'
-            body = '{"data":"' + 'x' * (1024 * 1024) + '"}'
+            body = ' ' * (1024 * 1024) + '{"interface":"loop2","state":"up"}'
             assert call(bob, 'transfer.begin', {'transfer': transfer, 'bytes': len(body), 'sha256': hashlib.sha256(body.encode()).hexdigest()})[-1]['type'] == 'result'
             assert call(alice, 'transfer.status', {'transfer': transfer})[-1]['error']['code'] == 'resource_not_found'
             for seq, offset in enumerate(range(0, len(body), 100000)):
                 assert call(bob, 'transfer.chunk', {'transfer': transfer, 'seq': seq, 'data': body[offset:offset+100000]})[-1]['type'] == 'result'
             assert call(bob, 'transfer.commit', {'transfer': transfer})[-1]['result']['committed']
-            assert call(bob, 'interface.set_state', params_ref=transfer)[-1]['error']['code'] == 'payload_too_large'
+            assert call(bob, 'interface.set_state', params_ref=transfer)[-1]['type'] == 'result'
             small = '{"interface":"loop2","state":"up"}'
             assert call(bob, 'transfer.begin', {'transfer': 'small', 'bytes': len(small), 'sha256': hashlib.sha256(small.encode()).hexdigest()})[-1]['type'] == 'result'
             assert call(bob, 'transfer.chunk', {'transfer': 'small', 'seq': 0, 'data': small})[-1]['type'] == 'result'
@@ -204,6 +205,33 @@ def main():
                 second = subprocess.run(command, env=env, capture_output=True, text=True, timeout=10)
                 assert second.returncode == 0, second.stderr + second.stdout
                 print('PASS C++ client registration and retry')
+                # Isolate a protocol fixture from the gateway: exercise the real
+                # C++ client's reassembly across more than one Redis window.
+                server.terminate()
+                server.wait(timeout=10)
+                saved = json.loads(session_file.read_text())
+                payload = json.dumps({'id': 'fragment-test', 'type': 'result', 'result': {'data': '☃' * 700000}}, ensure_ascii=False).encode()
+                digest = hashlib.sha256(payload).hexdigest()
+                with (root / 'fragment-output.json').open('w+') as output:
+                    command[-1] = 'fragment-test'
+                    process = subprocess.Popen(command, env=env, stdout=output, stderr=subprocess.PIPE, text=True)
+                    try:
+                        for seq, offset in enumerate(range(0, len(payload), 48 * 1024)):
+                            deadline = time.monotonic() + 10
+                            while redis.command('XLEN', saved['responses']) >= 32:
+                                assert time.monotonic() < deadline, 'Fragment ACK timeout'
+                                time.sleep(.005)
+                            frame = {'id': 'fragment-test', 'type': 'fragment', 'seq': seq, 'record': 0, 'offset': offset, 'total': len(payload), 'sha256': digest, 'encoding': 'base64-json', 'data': base64.b64encode(payload[offset:offset + 48 * 1024]).decode()}
+                            redis.command('XADD', saved['responses'], '*', 'json', json.dumps(frame))
+                        _, errors = process.communicate(timeout=10)
+                        assert process.returncode == 0, errors
+                        output.seek(0)
+                        assert json.load(output)['result']['data'] == '☃' * 700000
+                    finally:
+                        if process.poll() is None:
+                            process.kill()
+                            process.wait(timeout=5)
+                print('PASS C++ client reassembles a large Unicode result through Redis')
             print('All Redis integration checks passed')
         finally:
             if server is not None and server.poll() is None:

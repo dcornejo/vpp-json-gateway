@@ -165,6 +165,18 @@ plugins {{ plugin default {{ disable }} }}
         dumped = call(live, 'vpp.sw_interface_dump', {'sw_if_index': generated_name, 'name_filter_valid': False, 'name_filter': ''})
         assert dumped[-1]['type'] == 'complete' and dumped[-1]['items'] == 1, dumped
         assert dumped[0]['items'][0]['sw_if_index'] == generated_name, dumped
+        large_params = json.dumps({'sw_if_index': generated_name, 'name_filter_valid': False, 'name_filter': 'x' * 300000})
+        import hashlib
+        transfer = 'large-vapi-params'
+        assert call(live, 'transfer.begin', {'transfer': transfer, 'bytes': len(large_params), 'sha256': hashlib.sha256(large_params.encode()).hexdigest()})[-1]['type'] == 'result'
+        for seq, offset in enumerate(range(0, len(large_params), 100000)):
+            assert call(live, 'transfer.chunk', {'transfer': transfer, 'seq': seq, 'data': large_params[offset:offset + 100000]})[-1]['type'] == 'result'
+        assert call(live, 'transfer.commit', {'transfer': transfer})[-1]['type'] == 'result'
+        large_id = uuid.uuid4().hex
+        redis.command('XADD', live['requests'], '*', 'json', json.dumps({'id': large_id, 'method': 'vpp.sw_interface_dump', 'params_ref': transfer}))
+        large_dump = receive(live['responses'], large_id)
+        assert large_dump[-1]['type'] == 'complete' and large_dump[-1]['items'] == 1, large_dump
+        print('PASS uploaded 300 KB parameters encoded and dispatched through live VAPI', flush=True)
         deleted = call(live, 'vpp.delete_loopback', {'sw_if_index': generated_name})[-1]
         assert deleted['type'] == 'result', deleted
         print('PASS generated discovery, create/delete, symbolic flags, CIDR and dump; numeric symbols rejected', flush=True)

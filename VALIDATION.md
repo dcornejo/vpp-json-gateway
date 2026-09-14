@@ -125,3 +125,27 @@ UndefinedBehaviorSanitizer. Codec checks cover derived array counts, truncation,
 integer overflow, exact 64-bit decimal strings, flags, MAC addresses and interface
 sentinels. The Redis integration suite and Google-style cpplint checks pass.
 Other selectable VPP modules have not received live validation.
+
+## Large messages (2026-09-14)
+
+- Native VPP 26.06 test on dev-linux-1: uploaded and committed a parameter object
+  containing a 300,000-byte string, resolved it via `params_ref`, and dispatched
+  the generated interface dump through VAPI successfully. The original list,
+  mutation, replay, 3,001-interface dump, crash and restart tests also passed.
+  Evidence: `validation/large-vpp.log`.
+- Live testing exposed short writes in VAPI's nonblocking Unix socket send path.
+  Generated calls now temporarily use a five-second blocking send timeout, then
+  restore socket settings. Failed/partial submissions remain outcome-unknown.
+- Redis regression: a 1 MiB whitespace-padded valid parameter object is consumed
+  successfully; the C++ client reassembles a 2.1 MB Unicode response delivered by
+  a protocol fixture through more than one 32-frame Redis window.
+- Large-message unit tests validate actual spool fragmentation, exact Unicode
+  and escaped-content reconstruction, missing fragments, malformed base64,
+  checksum failure, partial-record quota failure, uploaded parameters, and the
+  independent native payload limit. All three test suites pass under ASan/UBSan.
+- Google-style cpplint and whitespace checks pass.
+
+Limits are intentional: 16 MiB per serialized logical response or uploaded JSON
+parameter object, 1 MiB per encoded native payload, and existing spool/upload
+quotas. These tests do not establish arbitrary-size VPP messages or variable
+native reply support. Individual JSON values are materialized in memory.

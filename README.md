@@ -193,7 +193,8 @@ An empty dump has `complete`, `seq:0`, `chunks:0`, `items:0`. Do not infer
 completion from a pause, timeout, socket closure, or a full delivery window.
 Every dump is spooled before delivery in this version, so it does not expose
 records before VPP finishes the operation. The file is read incrementally;
-the complete result is never accumulated in memory.
+the complete dump is never accumulated in memory. Individual records and decoded
+parameter objects are materialized in memory within the limits below.
 
 Errors have symbolic codes:
 
@@ -287,11 +288,56 @@ and session-private. A committed JSON object can be referenced as parameters:
 {"id":"request-4","method":"interface.set_state","params_ref":"upload-1"}
 ```
 
-Uploads can be up to 64 MiB; the first interface adapter accepts at most 256 KiB
-of JSON parameters (including its validation envelope). Staging a larger upload
-therefore does not imply that this small interface API can consume it. Future
-bulk adapters should read committed files incrementally. Transfer chunking does
-not lift VPP's binary message limits or make a sequence of operations atomic.
+Uploads can be up to 64 MiB. Committed JSON parameter objects up to 16 MiB can
+be consumed through `params_ref`; inline requests still have the 256 KiB frame
+limit. JSON nesting is limited to 32 levels. The generated adapter separately
+limits encoded native payloads to 1 MiB, including native string lengths and
+array counts. A large JSON object can therefore resolve successfully yet be
+rejected by its method or native payload limit. Neither chunking nor these
+limits make multiple VPP operations atomic.
+
+### Large response records
+
+A logical `chunk`, `result`, or `error` that cannot fit in one Redis frame is
+serialized as UTF-8 JSON and delivered as contiguous `fragment` frames:
+
+```json
+{"id":"request-5","type":"fragment","seq":0,"record":0,"offset":0,"total":350000,"sha256":"<digest of complete logical JSON>","encoding":"base64-json","data":"<base64 bytes>"}
+```
+
+`record` is the first wire sequence number of this logical record. `offset` and
+`total` count decoded bytes. Each fragment contains at most 48 KiB decoded data
+(64 KiB base64), with the same record, total, and SHA-256 metadata. Concatenate
+decoded data by offset, verify the final length and checksum, then parse the
+logical JSON. It carries the original request ID and response type, without a
+wire sequence number. The supplied C++ assembler attaches the last fragment's
+sequence number to the reconstructed response.
+
+Acknowledge each accepted fragment to advance the 32-frame window; waiting for
+the whole record before acknowledging can deadlock. Do not expose a partial
+record as a result. A terminal `error` discards an unfinished record. For dumps,
+`complete.items` counts logical items and `complete.chunks` counts preceding
+wire frames, including fragments. A fragmented single result ends when its
+logical `result` is reconstructed; there is no extra completion frame.
+
+`api.describe` advertises `response_fragments: "base64-json"`,
+`max_record_bytes`, `max_params_bytes`, and `max_native_payload_bytes`. Clients
+must implement fragmentation before calling methods that can return large
+records; old clients that understand only chunk/result/complete are insufficient.
+Both included C++ clients use `ResponseAssembler`, validate checksums, and print
+reconstructed JSON. Their stdout lines may consequently exceed 256 KiB.
+
+The logical JSON record limit is 16 MiB, including its envelope. Existing spool
+quotas include base64 overhead; exhausting a quota produces a terminal error,
+even partway through a record. Replay uses the same persisted fragments. Client
+reassembly buffers one logical record, and server JSON parsing/serialization
+materializes individual objects; this is bounded large-message support, not
+unlimited streaming of a single record.
+
+VAPI's Unix stream sender does not resume short writes. Generated requests use
+a blocking send with a five-second socket timeout on the backend worker, then
+restore the socket settings for nonblocking dispatch. Short or failed sends
+remain `outcome_unknown` and are never automatically retried.
 
 Default resource limits are in `src/common.h` and checked in the server:
 
@@ -303,9 +349,8 @@ Default resource limits are in `src/common.h` and checked in the server:
   upload bytes. The disk budget includes both unfinished and committed uploads.
 - 32 sessions, 128 ordinary requests per session, 16 MiB retained request JSON.
 
-This version rejects an individually oversized result record. Current interface
-records are small. Generic large-record fragmentation, compression, binary
-uploads, cancellation, subscription events, complete schema-wide API coverage,
+Records above 16 MiB and native payloads above 1 MiB are rejected. Compression,
+binary uploads, cancellation, subscription events, complete schema-wide API coverage,
 and disk-to-object-store spillover are future extensions, not advertised features.
 
 ## Redis access control

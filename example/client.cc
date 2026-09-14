@@ -6,6 +6,7 @@
 #include <iostream>
 #include <string>
 #include <thread>
+#include <utility>
 
 #include "src/common.h"
 #include "src/redis_transport.h"
@@ -35,6 +36,7 @@ void Send(RedisTransport* redis, const std::string& stream,
 Json Receive(RedisTransport* redis, const std::string& stream,
              const std::string& id) {
   uint64_t expected = 0;
+  vpp_json::ResponseAssembler assembler;
   auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
   while (std::chrono::steady_clock::now() < deadline) {
     auto reply = redis->Command({"XRANGE", stream, "-", "+", "COUNT", "32"});
@@ -64,12 +66,24 @@ Json Receive(RedisTransport* redis, const std::string& stream,
         Fail(
             "Response sequence gap; retain the request ID for explicit replay");
       }
-      std::cout << frame.dump() << '\n';
-      std::cout.flush();
+      Json logical;
+      bool ready = false;
+      auto status = assembler.Accept(frame, &logical, &ready);
+      if (!status.ok()) {
+        Fail(status.message);
+      }
+      if (ready) {
+        std::cout << logical.dump() << '\n';
+        std::cout.flush();
+      }
       auto ack = redis->Command({"XDEL", stream, Text(row->element[0])});
       if (!ack || ack->type != REDIS_REPLY_INTEGER) {
         Fail("Acknowledgment failed");
       }
+      if (!ready) {
+        continue;
+      }
+      frame = std::move(logical);
       if (frame["type"] == "error") {
         Fail("API returned an error; see the JSON frame above");
       }

@@ -7,6 +7,7 @@
 #include <iostream>
 #include <string>
 #include <thread>
+#include <utility>
 
 #include "src/common.h"
 #include "src/redis_transport.h"
@@ -31,6 +32,7 @@ Json Wait(RedisTransport* redis, const std::string& stream,
           const std::string& id, bool print) {
   auto deadline = std::chrono::steady_clock::now() + std::chrono::minutes(15);
   uint64_t expected = 0;
+  ResponseAssembler assembler;
   while (std::chrono::steady_clock::now() < deadline) {
     auto reply = redis->Command({"XRANGE", stream, "-", "+", "COUNT", "32"});
     if (!reply || reply->type != REDIS_REPLY_ARRAY) {
@@ -62,12 +64,21 @@ Json Wait(RedisTransport* redis, const std::string& stream,
         }
         if (seq == expected) {
           ++expected;
-          if (print) {
-            std::cout << frame.dump() << '\n';
-            std::cout.flush();
+          Json logical;
+          bool ready = false;
+          Status status = assembler.Accept(frame, &logical, &ready);
+          if (!status.ok()) {
+            Fail(status.message);
           }
-          terminal = frame["type"] == "complete" || frame["type"] == "result" ||
-                     frame["type"] == "error";
+          if (ready) {
+            frame = std::move(logical);
+            if (print) {
+              std::cout << frame.dump() << '\n';
+              std::cout.flush();
+            }
+            terminal = frame["type"] == "complete" ||
+                       frame["type"] == "result" || frame["type"] == "error";
+          }
         }
       }
       auto ack = redis->Command(

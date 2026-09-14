@@ -7,7 +7,7 @@ SPDX-License-Identifier: Apache-2.0
 
 Prioritize large-message completion and broader API coverage.
 
-- [ ] **Large individual messages:** Multi-frame dumps and uploads work, but individual records and consumed parameters remain limited to 256 KiB. Add support for larger individual records and parameters.
+- [x] **Large individual messages:** Added bounded response fragmentation and client reassembly for logical records up to 16 MiB; uploaded JSON parameters up to 16 MiB; generated native payloads up to 1 MiB. Redis frames remain limited to 256 KiB. Larger/unbounded records, binary uploads, and compression remain future extensions.
 - [ ] **API coverage:** 35 interface services are supported. Add events, TX-placement streaming, variable-length replies, and broader modules.
 - [ ] **Symbolic identifiers:** Typed interface indexes and enums are translated; translate remaining untyped numeric resource identifiers where appropriate.
 - [ ] **Scheduling:** Operations run one at a time, so long requests delay others. Improve scheduling and add cancellation.

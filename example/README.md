@@ -46,6 +46,8 @@ as JSON and acknowledged with `XDEL` after processing. The 100-item lists exceed
 the 32-frame response window and demonstrate continued delivery through
 acknowledgments. Request IDs and sequence numbers correlate and order replies.
 See `client.cc` for the complete exchange, including timeout and error handling.
+It uses `ResponseAssembler` to validate and reassemble fragmented large records
+before printing them, while acknowledging each accepted wire fragment.
 
 ## Configuration and keys
 
