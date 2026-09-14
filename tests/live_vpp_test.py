@@ -181,6 +181,25 @@ plugins {{ plugin default {{ disable }} }}
         assert deleted['type'] == 'result', deleted
         print('PASS generated discovery, create/delete, symbolic flags, CIDR and dump; numeric symbols rejected', flush=True)
 
+        threads = call(live, 'vpp.show_threads')[-1]
+        assert threads['type'] == 'result', threads
+        assert threads['result']['thread_data'] and 'count' not in threads['result'], threads
+        assert isinstance(threads['result']['thread_data'][0]['name'], str), threads
+        table = {'table_id': 8123, 'is_ip6': False, 'name': 'gateway-test'}
+        assert call(live, 'vpp.ip_table_add_del', {'table': table})[-1]['type'] == 'result'
+        tables = call(live, 'vpp.ip_table_dump')
+        assert tables[-1]['type'] == 'complete', tables
+        assert any(f['items'][0]['table']['table_id'] == 8123 for f in tables[:-1]), tables
+        assert call(live, 'vpp.ip_table_add_del', {'is_add': False, 'table': table})[-1]['type'] == 'result'
+        # A loopback has no hardware TX queue. The explicit completion error
+        # must end the response instead of hanging or claiming an empty success.
+        placement = call(live, 'vpp.sw_interface_tx_placement_get', {'sw_if_index': '@all'})
+        assert placement[-1]['type'] in ('complete', 'error'), placement
+        if placement[-1]['type'] == 'error':
+            assert placement[-1]['error']['code'] == 'vpp_rejected', placement
+        assert call(live, 'vpp.sw_interface_tx_placement_get', {'sw_if_index': '@all', 'cursor': 0})[-1]['error']['code'] == 'invalid_params'
+        print('PASS variable thread reply, IP table lifecycle, explicit stream completion and hidden cursor', flush=True)
+
         commands = root / 'loopbacks.cli'
         commands.write_text(''.join(f'create loopback interface instance {i}\n' for i in range(1, 3000)))
         cli('exec ' + str(commands))

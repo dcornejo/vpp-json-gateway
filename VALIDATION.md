@@ -149,3 +149,25 @@ Limits are intentional: 16 MiB per serialized logical response or uploaded JSON
 parameter object, 1 MiB per encoded native payload, and existing spool/upload
 quotas. These tests do not establish arbitrary-size VPP messages or variable
 native reply support. Individual JSON values are materialized in memory.
+
+## Expanded API coverage (2026-09-14)
+
+The default interface/vlib/ip catalog supports 85 of 93 services. Native builds
+against VPP 26.06 headers pass, including payload-size assertions. Evidence:
+`validation/coverage-vpp.log`.
+
+Live tests exercise `show_threads` with a variable thread array, IP table
+creation/dump/deletion, boolean schema defaults, explicit TX stream completion
+errors, and rejection of caller-supplied cursors. All prior live interface,
+large-parameter, crash, replay and restart checks also pass.
+
+The Linux generated-callback test covers zero-length ordinary replies, variable
+TX arrays, internal array counts, separate detail/completion callbacks,
+continuation status retention, and rejecting an oversized count before copying.
+All four Linux tests pass; the three portable suites pass under ASan/UBSan.
+
+The fixture has no hardware TX queues. Successful multi-page hardware traversal
+is implemented but not live-validated; its generated detail/completion callbacks
+are tested with synthetic native payloads. Event subscriptions and nested
+variable reply layouts remain explicitly unsupported. Coverage counts describe
+supported bindings, not exhaustive behavioral validation of every operation.

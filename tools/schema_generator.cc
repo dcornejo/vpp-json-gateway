@@ -12,7 +12,7 @@
 namespace {
 using vpp_json::Json;
 using vpp_json::Schema;
-// Untagged unions and variable replies need separate response-length handling.
+// Reject ambiguous unions rather than guessing which member is active.
 bool Supported(const Schema& schema, const std::string& name,
                bool tagged = false, int depth = 0) {
   if (depth > 32 || schema.FixedSize(name) < 0) {
@@ -39,6 +39,97 @@ bool Supported(const Schema& schema, const std::string& name,
     }
   }
   return true;
+}
+// Support a trailing variable array of fixed-size elements, or a trailing
+// string. VAPI verifies the received message length before invoking callbacks.
+bool ReplyLayout(const Schema& schema, const std::string& name) {
+  if (!schema.Variable(name)) {
+    return true;
+  }
+  const Json* type = schema.Type(name);
+  if (!type || (*type)["kind"] != "struct") {
+    return false;
+  }
+  const auto& fields = (*type)["fields"];
+  for (std::size_t i = 0; i < fields.size(); ++i) {
+    const auto& field = fields[i];
+    std::string child = field["type"];
+    bool variable = field.value("length", -1) == 0 || schema.Variable(child);
+    if (child == "string" && field.value("length", 0) > 0) {
+      variable = false;
+    }
+    if (!variable) {
+      continue;
+    }
+    if (i + 1 != fields.size()) {
+      return false;
+    }
+    if (child == "string") {
+      return true;
+    }
+    if (schema.Variable(child) || !field.contains("count")) {
+      return false;
+    }
+    for (std::size_t j = 0; j < i; ++j) {
+      if (fields[j]["name"] == field["count"] &&
+          (fields[j]["type"] == "u8" || fields[j]["type"] == "u16" ||
+           fields[j]["type"] == "u32")) {
+        return true;
+      }
+    }
+    return false;
+  }
+  return false;
+}
+void Callback(std::ostream& out, const Schema& schema,
+              const std::string& function, const std::string& reply, bool items,
+              bool completes) {
+  out << "vapi_error_e " << function
+      << "(vapi_ctx_t, void* opaque, vapi_error_e rc, bool last, vapi_payload_"
+      << reply << "* reply) {\n"
+      << " auto* state = static_cast<GeneratedCall*>(opaque);\n"
+      << " if (rc != VAPI_OK) { state->error = rc; state->done = true; return "
+         "VAPI_OK; }\n"
+      << " if (reply) {\n static_assert(sizeof(*reply) == "
+      << schema.FixedSize(reply)
+      << ", \"Schema/native reply layout mismatch\");\n size_t size = "
+         "sizeof(*reply);\n";
+  if (schema.Variable(reply)) {
+    const auto& field = (*schema.Type(reply))["fields"].back();
+    std::string name = field["name"];
+    if (field["type"] == "string") {
+      out << " const uint64_t count = reply->" << name
+          << ".length;\n constexpr size_t element = 1;\n";
+    } else {
+      out << " const uint64_t count = reply->"
+          << field["count"].get<std::string>()
+          << ";\n constexpr size_t element = sizeof(reply->" << name
+          << "[0]);\n";
+    }
+    out << " if (size > Limits::kNativePayloadBytes || count > "
+           "(Limits::kNativePayloadBytes - size) / element) { state->status = "
+           "{\"payload_too_large\", \"Native reply exceeds 1 MiB\"}; } else { "
+           "size += count * element; }\n";
+  }
+  for (const auto& field : (*schema.Type(reply))["fields"]) {
+    if (field["name"] == "retval" && field["type"] == "i32") {
+      out << " state->retval = reply->retval;\n";
+    }
+  }
+  out << " if (state->status.ok()) { const auto* data = reinterpret_cast<const "
+         "uint8_t*>(reply);\n";
+  if (items) {
+    out << " state->item({data, size});\n";
+  } else {
+    out << " state->reply.assign(data, data + size);\n";
+  }
+  out << " } }\n";
+  if (completes) {
+    out << " if (last) state->done = true;\n";
+  } else {
+    out << " (void)last;\n";
+  }
+  out << " return VAPI_OK;\n}\n";
 }
 }  // namespace
 int main(int argc, char** argv) {
@@ -90,18 +181,24 @@ int main(int argc, char** argv) {
        ++it) {
     Json& method = it.value();
     std::string request = method["request"], reply = method.value("reply", "");
+    std::string details = method.value("stream_msg", "");
+    bool explicit_stream = !details.empty();
+    bool auto_cursor = request == "sw_interface_tx_placement_get";
     std::string reason;
     if (method.contains("events")) {
       reason = "Event subscriptions require a subscription adapter";
-    } else if (method.contains("stream_msg")) {
-      reason = "Explicit streaming completion requires a dedicated adapter";
+    } else if (explicit_stream && !auto_cursor) {
+      reason = "Stream continuation policy requires a dedicated adapter";
     } else if (!schema.Type(reply) || !Supported(schema, request) ||
                !Supported(schema, reply)) {
       reason = "Unsupported or ambiguous payload layout";
-    } else if (schema.Variable(reply)) {
-      reason = "Variable reply length requires a dedicated adapter";
+    } else if (!ReplyLayout(schema, reply) ||
+               (explicit_stream && (!Supported(schema, details) ||
+                                    !ReplyLayout(schema, details)))) {
+      reason = "Nested variable reply layout requires a dedicated adapter";
     }
     method["supported"] = reason.empty();
+    method["automatic_cursor"] = auto_cursor;
     if (!reason.empty()) {
       method["reason"] = reason;
       continue;
@@ -112,28 +209,16 @@ int main(int argc, char** argv) {
     out << "bool Available_" << request
         << "(vapi_ctx_t ctx) { return vapi_is_msg_available(ctx, vapi_msg_id_"
         << request << ") && vapi_is_msg_available(ctx, vapi_msg_id_" << reply
-        << "); }\n";
-    out << "vapi_error_e Reply_" << request
-        << "(vapi_ctx_t, void* opaque, vapi_error_e rc, bool last, "
-           "vapi_payload_"
-        << reply
-        << "* reply) {\n auto* state = static_cast<GeneratedCall*>(opaque);\n "
-           "if (rc != VAPI_OK) { state->error = rc; state->done = true; return "
-           "VAPI_OK; }\n if (reply) {\n static_assert(sizeof(*reply) == "
-        << schema.FixedSize(reply)
-        << ", \"Schema/native reply layout mismatch\");\n const auto* data = "
-           "reinterpret_cast<const uint8_t*>(reply);\n";
-    for (const auto& field : (*schema.Type(reply))["fields"]) {
-      if (field["name"] == "retval" && field["type"] == "i32") {
-        out << " state->retval = reply->retval;\n";
-      }
+        << ")";
+    if (explicit_stream) {
+      out << " && vapi_is_msg_available(ctx, vapi_msg_id_" << details << ")";
     }
-    if (stream) {
-      out << " state->item({data, sizeof(*reply)});\n";
-    } else {
-      out << " state->reply.assign(data, data + sizeof(*reply));\n";
+    out << "; }\n";
+    Callback(out, schema, "Reply_" + request, reply, stream && !explicit_stream,
+             true);
+    if (explicit_stream) {
+      Callback(out, schema, "Details_" + request, details, true, false);
     }
-    out << " }\n if (last) state->done = true;\n return VAPI_OK;\n}\n";
     out << "vapi_error_e Send_" << request
         << "(vapi_ctx_t ctx, std::span<const uint8_t> bytes, GeneratedCall* "
            "state) {\n using Message = vapi_msg_"
@@ -155,8 +240,11 @@ int main(int argc, char** argv) {
         << ");\n if (!bytes.empty()) "
            "std::memcpy(reinterpret_cast<uint8_t*>(msg) + header, "
            "bytes.data(), bytes.size());\n auto rc = vapi_"
-        << request << "(ctx, msg, Reply_" << request
-        << ", state);\n if (rc != VAPI_OK) vapi_msg_free(ctx, msg);\n return "
+        << request << "(ctx, msg, Reply_" << request << ", state";
+    if (explicit_stream) {
+      out << ", Details_" << request << ", state";
+    }
+    out << ");\n if (rc != VAPI_OK) vapi_msg_free(ctx, msg);\n return "
            "rc;\n}\n";
   }
   out << "}  // namespace\nconst std::vector<GeneratedBinding>& "

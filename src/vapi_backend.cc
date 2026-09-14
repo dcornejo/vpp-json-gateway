@@ -22,6 +22,8 @@
 
 namespace vpp_json {
 namespace {
+// VPP 26.06 vnet/error.h: EAGAIN requests the next stream page.
+constexpr int32_t kVppStreamContinue = -165;
 // VPP 26.06 generated C bindings handle IDs, endian conversion and dump pings.
 class VapiBackend final : public Backend {
  public:
@@ -118,7 +120,19 @@ class VapiBackend final : public Backend {
       }
       Json description = methods[name];
       description["params"] = schema_.Describe(description["request"]);
-      description["result"] = schema_.Describe(description.value("reply", ""));
+      description["result"] = schema_.Describe(
+          description.value("stream_msg", description.value("reply", "")));
+      if (description.value("automatic_cursor", false)) {
+        description["params"]["properties"].erase("cursor");
+        auto& required = description["params"]["required"];
+        for (auto it = required.begin(); it != required.end();) {
+          if (*it == "cursor") {
+            it = required.erase(it);
+          } else {
+            ++it;
+          }
+        }
+      }
       return spool->Single(Result(id, description));
     }
     if (method == "api.methods") {
@@ -165,7 +179,18 @@ class VapiBackend final : public Backend {
       return fail({"unsupported_operation",
                    "VPP message schema is unavailable or incompatible"});
     }
-    std::string input = description["request"], output = description["reply"];
+    std::string input = description["request"],
+                output = description.value(
+                    "stream_msg", description["reply"].get<std::string>());
+    bool explicit_stream = description.contains("stream_msg");
+    bool automatic_cursor = description.value("automatic_cursor", false);
+    Json call_params = params;
+    if (automatic_cursor) {
+      if (params.contains("cursor")) {
+        return fail({"invalid_params", "Pagination is managed by the gateway"});
+      }
+      call_params["cursor"] = UINT32_MAX;
+    }
     bool stream = description.value("stream", false);
     if (schema_.HasInterface(input) || schema_.HasInterface(output)) {
       status = RefreshNames();
@@ -199,92 +224,135 @@ class VapiBackend final : public Backend {
       *name = found->second;
       return {};
     };
-    std::vector<uint8_t> bytes;
-    status = schema_.Encode(input, params, symbols, &bytes);
-    if (!status.ok()) {
-      return fail(status);
-    }
-    GeneratedCall call;
-    Status reply_status;
-    call.item = [&](std::span<const uint8_t> payload) {
-      if (!reply_status.ok() || !spool->status().ok()) {
-        return;
-      }
-      Json item;
-      reply_status = schema_.Decode(output, payload, symbols, &item);
-      if (reply_status.ok()) {
-        spool->Add(item);
-      }
-    };
-    // VAPI's Unix stream sender does not resume short writes. Use a bounded
-    // blocking send on this worker only, then restore nonblocking dispatch.
-    int fd = -1;
-    if (vapi_get_fd(context_, &fd) != VAPI_OK) {
-      return fail({"backend_unavailable", "VAPI socket unavailable"});
-    }
-    int flags = fcntl(fd, F_GETFL);
-    timeval previous{};
-    socklen_t previous_size = sizeof(previous);
-    timeval timeout{5, 0};
-    if (flags < 0 ||
-        getsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &previous, &previous_size) !=
-            0 ||
-        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout)) !=
-            0 ||
-        fcntl(fd, F_SETFL, flags & ~O_NONBLOCK) != 0) {
-      Reset();
-      return fail(
-          {"backend_unavailable", "Cannot configure bounded VAPI send"});
-    }
-    auto rc = selected->send(context_, bytes, &call);
-    bool restored_flags = fcntl(fd, F_SETFL, flags) == 0;
-    bool restored_timeout = setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &previous,
-                                       sizeof(previous)) == 0;
-    if (!restored_flags || !restored_timeout) {
-      Reset();
-      return fail({"outcome_unknown", "Cannot restore VAPI socket after send"});
-    }
-    if (rc != VAPI_OK) {
-      Reset();
-      return fail({"outcome_unknown",
-                   "VAPI submission failed; reconcile before retrying"});
-    }
-    status = Dispatch(&call.done, true);
-    if (status.ok() && call.error != VAPI_OK) {
-      Reset();
-      status = {"outcome_unknown", "VAPI reply failed"};
-    }
-    if (stream) {
-      return spool->Finish(status.ok() ? reply_status : status);
-    }
-    if (!status.ok()) {
-      return fail(status);
-    }
-    if (call.retval != 0) {
-      return fail({"vpp_rejected", "VPP rejected the operation"});
-    }
-    // A successful create operation can return an interface absent before send.
-    if (schema_.HasInterface(output)) {
-      status = RefreshNames();
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    for (int page = 0; page < 1024; ++page) {
+      std::vector<uint8_t> bytes;
+      status = schema_.Encode(input, call_params, symbols, &bytes);
       if (!status.ok()) {
+        return fail(status);
+      }
+      GeneratedCall call;
+      Status reply_status;
+      call.item = [&](std::span<const uint8_t> payload) {
+        if (!reply_status.ok() || !spool->status().ok()) {
+          return;
+        }
+        Json item;
+        reply_status = schema_.Decode(output, payload, symbols, &item);
+        if (reply_status.ok()) {
+          spool->Add(item);
+        }
+      };
+      // VAPI's Unix stream sender does not resume short writes. Use a bounded
+      // blocking send on this worker only, then restore nonblocking dispatch.
+      int fd = -1;
+      if (vapi_get_fd(context_, &fd) != VAPI_OK) {
+        return fail({"backend_unavailable", "VAPI socket unavailable"});
+      }
+      int flags = fcntl(fd, F_GETFL);
+      timeval previous{};
+      socklen_t previous_size = sizeof(previous);
+      timeval timeout{5, 0};
+      if (flags < 0 ||
+          getsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &previous, &previous_size) !=
+              0 ||
+          setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout)) !=
+              0 ||
+          fcntl(fd, F_SETFL, flags & ~O_NONBLOCK) != 0) {
+        Reset();
         return fail(
-            {"outcome_unknown",
-             "Reply received but interface names could not be refreshed"});
+            {"backend_unavailable", "Cannot configure bounded VAPI send"});
       }
-    }
-    Json result;
-    status = schema_.Decode(output, call.reply, symbols, &result);
-    if (!status.ok()) {
-      return fail(status);
-    }
-    if (result.contains("retval")) {
-      if (result["retval"] != 0) {
-        return fail({"vpp_rejected", "VPP rejected the operation (retval " +
-                                         result["retval"].dump() + ")"});
+      auto rc = selected->send(context_, bytes, &call);
+      bool restored_flags = fcntl(fd, F_SETFL, flags) == 0;
+      bool restored_timeout = setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &previous,
+                                         sizeof(previous)) == 0;
+      if (!restored_flags || !restored_timeout) {
+        Reset();
+        return fail(
+            {"outcome_unknown", "Cannot restore VAPI socket after send"});
       }
-      result.erase("retval");
+      if (rc != VAPI_OK) {
+        Reset();
+        return fail({"outcome_unknown",
+                     "VAPI submission failed; reconcile before retrying"});
+      }
+      status = Dispatch(&call.done, true, deadline);
+      if (status.ok() && call.error != VAPI_OK) {
+        Reset();
+        status = {"outcome_unknown", "VAPI reply failed"};
+      }
+      if (stream) {
+        if (!status.ok()) {
+          return spool->Finish(status);
+        }
+        if (!call.status.ok()) {
+          return spool->Finish(call.status);
+        }
+        if (!reply_status.ok() || !spool->status().ok()) {
+          return spool->Finish(reply_status);
+        }
+        if (explicit_stream) {
+          Json completion;
+          status = schema_.Decode(description["reply"], call.reply, symbols,
+                                  &completion);
+          if (!status.ok()) {
+            return spool->Finish(status);
+          }
+          if (call.retval == kVppStreamContinue && automatic_cursor) {
+            if (!completion.contains("cursor") ||
+                !completion["cursor"].is_number_unsigned() ||
+                completion["cursor"] == call_params["cursor"] ||
+                std::chrono::steady_clock::now() >= deadline) {
+              return spool->Finish(
+                  {"deadline_exceeded", "VPP pagination did not complete"});
+            }
+            call_params["cursor"] = completion["cursor"];
+            continue;
+          }
+          if (call.retval != 0) {
+            return spool->Finish(
+                {"vpp_rejected", "VPP rejected the stream operation"});
+          }
+        }
+        return spool->Finish({});
+      }
+      if (!call.status.ok()) {
+        return fail(call.status);
+      }
+      if (!status.ok()) {
+        return fail(status);
+      }
+      if (call.retval != 0) {
+        return fail({"vpp_rejected", "VPP rejected the operation"});
+      }
+      // A successful create operation can return an interface absent before
+      // send.
+      if (schema_.HasInterface(output)) {
+        status = RefreshNames();
+        if (!status.ok()) {
+          return fail(
+              {"outcome_unknown",
+               "Reply received but interface names could not be refreshed"});
+        }
+      }
+      Json result;
+      status = schema_.Decode(output, call.reply, symbols, &result);
+      if (!status.ok()) {
+        return fail(status);
+      }
+      if (result.contains("retval")) {
+        if (result["retval"] != 0) {
+          return fail({"vpp_rejected", "VPP rejected the operation (retval " +
+                                           result["retval"].dump() + ")"});
+        }
+        result.erase("retval");
+      }
+      return spool->Single(Result(id, result));
     }
-    return spool->Single(Result(id, result));
+    return spool->Finish(
+        {"quota_exceeded", "VPP pagination exceeded 1024 pages"});
   }
 
  private:
@@ -377,8 +445,10 @@ class VapiBackend final : public Backend {
     }
     return {};
   }
-  Status Dispatch(const bool* done, bool mutation) {
-    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+  Status Dispatch(const bool* done, bool mutation,
+                  std::chrono::steady_clock::time_point deadline =
+                      std::chrono::steady_clock::now() +
+                      std::chrono::seconds(30)) {
     while (!*done) {
       vapi_error_e rc = vapi_dispatch_one(context_);
       if (rc != VAPI_OK && rc != VAPI_EAGAIN) {
@@ -404,9 +474,9 @@ class VapiBackend final : public Backend {
     if (vapi_ctx_alloc(&context_) != VAPI_OK) {
       return {"backend_unavailable", "Cannot allocate VAPI context"};
     }
-    // VAPI 26.06 exposes requests_size - 1 usable entries. Reserve its
-    // sentinel slot in addition to our single in-flight operation.
-    constexpr int kRequestSlots = 2;
+    // A single explicit stream operation registers detail and completion
+    // callbacks. VAPI also reserves one sentinel slot.
+    constexpr int kRequestSlots = 3;
     vapi_error_e rc =
         vapi_connect_ex(context_, "json-gateway", socket_.c_str(),
                         kRequestSlots, 1024, VAPI_MODE_NONBLOCKING, true, true);

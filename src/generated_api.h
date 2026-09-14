@@ -18,6 +18,7 @@ struct GeneratedCall {
   bool done = false;
   int32_t retval = 0;
   vapi_error_e error = VAPI_OK;
+  Status status;
   std::vector<uint8_t> reply;
   std::function<void(std::span<const uint8_t>)> item;
 };

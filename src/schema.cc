@@ -161,6 +161,12 @@ Status Number(Json* value, std::vector<uint8_t>* encoded,
 Json PublicDefault(const Json& field, const Schema& schema) {
   Json value = field["default"];
   std::string type = field["type"];
+  if (type == "bool" && value == "true") {
+    return true;
+  }
+  if (type == "bool" && value == "false") {
+    return false;
+  }
   if (type == "vl_api_interface_index_t" && value == UINT32_MAX) {
     return "@all";
   }

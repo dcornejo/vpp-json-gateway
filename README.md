@@ -93,7 +93,9 @@ access to that socket.
 The adapter uses VPP's generated C bindings from C++, with RAII for the context.
 The bindings handle numeric message IDs, network byte order, and dump completion
 via control ping. VAPI 26.06 reserves a queue slot internally, so the adapter
-allocates two slots to allow exactly one outstanding operation. Message availability is checked before dispatch. Public
+allocates three slots: two callback registrations for an explicit stream and
+one internal sentinel, while still running one gateway operation at a time.
+Message availability is checked before dispatch. Public
 operations include `interface.list`, `interface.set_state`, and generated
 `vpp.<message_name>` methods. VAPI message IDs, context, byte order and array
 counts stay internal. Interface-index types use names; enums and flags use symbols.
@@ -106,10 +108,11 @@ stable across that pair of calls. Dumps are not advertised as snapshots.
 
 ## Generated VPP methods
 
-The C++ build-time generator reads the installed `interface.api.json`, emits
-native VAPI wrappers and embeds the matching JSON catalog. The VPP 26.06
-interface module has 37 services: 35 supported generated methods, plus two
-explicitly unsupported services (event subscriptions and TX-placement streaming).
+The C++ build-time generator reads installed `.api.json` files, emits native
+VAPI wrappers and embeds the matching JSON catalog. The default VPP 26.06
+modules are `interface`, `vlib`, and `ip`: 85 of 93 services are supported
+(36 interface, 9 vlib, and 40 IP). Unsupported services remain visible with
+reasons in discovery.
 Compilation checks native payload sizes against schema sizes; runtime checks
 verify that VPP offers the matching message schemas. The mock backend does not
 provide generated methods.
@@ -143,11 +146,29 @@ that return interface indexes, allowing creation to return the new name.
 Generated calls are conservatively reported as `outcome_unknown` on transport
 failure and are never automatically retried.
 
-`VPP_API_MODULES` is a CMake list (default `interface`). Additional installed
-modules can be selected, but only the default module has live validation here.
-Variable-length replies, ambiguous unions, event subscriptions, and services
-with a separate streaming completion message are rejected by generation and
-identified in discovery. New layouts require adapter work and validation.
+`VPP_API_MODULES` is a CMake list (default `interface;vlib;ip`). The interface
+module is always included for name resolution. Existing build directories retain
+their cached selection; use `-DVPP_API_MODULES='interface;vlib;ip'` to expand one.
+Other installed modules can be selected but require their own validation.
+
+Replies can contain a trailing variable array of fixed-size elements or a
+trailing string. VAPI verifies received lengths before the callback; the wrapper
+checks the 1 MiB native budget before copying or decoding. Array counts remain
+internal. `vpp.show_threads` is a live-tested variable-array example, and
+`vpp.ip_table_add_del` / `vpp.ip_table_dump` are live-tested IP module examples.
+
+`vpp.sw_interface_tx_placement_get` takes `sw_if_index` as a name or `@all` and
+streams variable-length TX queue details. The gateway hides the cursor, follows
+VPP continuation replies, and emits `complete` only after successful final
+completion. Pagination shares a 30-second dispatch deadline and a 1,024-page
+cap; a terminal VPP error produces `error`, even after partial details. Like
+other dumps, it is not a snapshot. Caller-supplied cursors are rejected.
+
+Event subscriptions, nested variable reply layouts, ambiguous unions, and
+stream services without an implemented continuation policy remain unsupported.
+The live fixture exercises TX completion errors; variable TX details are tested
+through generated callbacks because the fixture has no hardware TX queues.
+Hardware-backed multi-page TX traversal still needs live validation.
 
 ## Wire protocol
 
