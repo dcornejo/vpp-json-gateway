@@ -1,0 +1,23 @@
+[Unit]
+Description=VPP JSON Redis gateway
+After=network.target redis-server.service vpp.service
+
+[Service]
+Type=simple
+User=vpp-json
+Group=vpp-json
+# Provision this account and grant access to the VPP API socket separately.
+StateDirectory=vpp-json-gateway
+UMask=0077
+EnvironmentFile=-/etc/vpp-json-gateway/redis.env
+ExecStart=/usr/local/bin/vpp-json-gateway --backend vapi --clients /etc/vpp-json-gateway/clients.json --state /var/lib/vpp-json-gateway --vpp-socket /run/vpp/api.sock
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=45
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

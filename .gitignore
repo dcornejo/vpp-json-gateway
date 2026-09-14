@@ -1,0 +1,7 @@
+build/
+state/
+__pycache__/
+build-*/
+CMakeUserPresets.json
+.DS_Store
+*.pyc

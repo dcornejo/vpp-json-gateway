@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "VPP JSON request envelope v1",
+  "type": "object",
+  "required": [
+    "id",
+    "method"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{1,96}$"
+    },
+    "method": {
+      "type": "string"
+    },
+    "params": {
+      "type": "object"
+    },
+    "params_ref": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{1,96}$"
+    }
+  },
+  "not": {
+    "required": [
+      "params",
+      "params_ref"
+    ]
+  }
+}

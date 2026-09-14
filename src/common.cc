@@ -1,0 +1,291 @@
+#include "src/common.h"
+
+#include <dirent.h>
+#include <fcntl.h>
+#include <openssl/crypto.h>
+#include <openssl/evp.h>
+#include <openssl/rand.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+#include <chrono>
+#include <cstdlib>
+#include <string>
+#include <utility>
+#include <vector>
+
+namespace vpp_json {
+namespace {
+std::string Hex(const unsigned char* data, std::size_t size) {
+  const char kHex[] = "0123456789abcdef";
+  std::string output;
+  for (std::size_t i = 0; i < size; ++i) {
+    output += kHex[data[i] >> 4];
+    output += kHex[data[i] & 15];
+  }
+  return output;
+}
+bool WriteAll(int fd, const std::string& data) {
+  std::size_t offset = 0;
+  while (offset < data.size()) {
+    ssize_t count = write(fd, data.data() + offset, data.size() - offset);
+    if (count < 0 && errno == EINTR) {
+      continue;
+    }
+    if (count <= 0) {
+      return false;
+    }
+    offset += count;
+  }
+  return true;
+}
+}  // namespace
+std::string ParentDirectory(const std::string& path) {
+  auto slash = path.find_last_of('/');
+  if (slash == std::string::npos) {
+    return ".";
+  }
+  return slash == 0 ? "/" : path.substr(0, slash);
+}
+bool MakeDirectories(const std::string& path) {
+  if (mkdir(path.c_str(), 0700) == 0) {
+    return true;
+  }
+  if (errno == EEXIST) {
+    struct stat info;
+    return lstat(path.c_str(), &info) == 0 && S_ISDIR(info.st_mode);
+  }
+  if (errno != ENOENT || path.empty()) {
+    return false;
+  }
+  return MakeDirectories(ParentDirectory(path)) &&
+         mkdir(path.c_str(), 0700) == 0;
+}
+int64_t FileSize(const std::string& path) {
+  struct stat info;
+  if (lstat(path.c_str(), &info) != 0 || !S_ISREG(info.st_mode)) {
+    return -1;
+  }
+  return info.st_size;
+}
+Status ListFiles(const std::string& directory,
+                 std::vector<std::string>* files) {
+  DIR* handle = opendir(directory.c_str());
+  if (!handle) {
+    return {"storage_error", "Cannot list directory"};
+  }
+  errno = 0;
+  while (dirent* entry = readdir(handle)) {
+    std::string name = entry->d_name;
+    if (name != "." && name != "..") {
+      files->push_back(directory + "/" + name);
+    }
+  }
+  int error = errno;
+  closedir(handle);
+  return error ? Status{"storage_error", "Cannot read directory"} : Status{};
+}
+bool RemoveTree(const std::string& path) {
+  struct stat info;
+  if (lstat(path.c_str(), &info) != 0) {
+    return errno == ENOENT;
+  }
+  if (!S_ISDIR(info.st_mode)) {
+    return unlink(path.c_str()) == 0;
+  }
+  std::vector<std::string> files;
+  if (!ListFiles(path, &files).ok()) {
+    return false;
+  }
+  for (const auto& file : files) {
+    if (!RemoveTree(file)) {
+      return false;
+    }
+  }
+  return rmdir(path.c_str()) == 0;
+}
+int64_t Now() {
+  return std::chrono::duration_cast<std::chrono::seconds>(
+             std::chrono::system_clock::now().time_since_epoch())
+      .count();
+}
+std::string RandomId() {
+  unsigned char bytes[16];
+  if (RAND_bytes(bytes, sizeof(bytes)) != 1) {
+    std::abort();
+  }
+  return Hex(bytes, sizeof(bytes));
+}
+std::string Sha256(const std::string& data) {
+  unsigned char digest[EVP_MAX_MD_SIZE];
+  unsigned int size = 0;
+  if (EVP_Digest(data.data(), data.size(), digest, &size, EVP_sha256(),
+                 nullptr) != 1) {
+    std::abort();
+  }
+  return Hex(digest, size);
+}
+bool EqualSecret(const std::string& a, const std::string& b) {
+  return a.size() == b.size() &&
+         CRYPTO_memcmp(a.data(), b.data(), a.size()) == 0;
+}
+bool IsId(const Json& value) {
+  if (!value.is_string()) {
+    return false;
+  }
+  const auto& text = value.get_ref<const std::string&>();
+  if (text.empty() || text.size() > 96) {
+    return false;
+  }
+  for (unsigned char c : text) {
+    if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+          (c >= '0' && c <= '9') || c == '-' || c == '_')) {
+      return false;
+    }
+  }
+  return true;
+}
+bool IsUnsigned(const Json& value, uint64_t maximum) {
+  return value.is_number_unsigned() && value.get<uint64_t>() <= maximum;
+}
+Status ParseRequest(const std::string& text, Json* request) {
+  if (text.size() > Limits::kFrameBytes) {
+    return {"frame_too_large", "Use transfer.begin/chunk/commit"};
+  }
+  // Reject excessive nesting before the recursive JSON parser runs.
+  int depth = 0;
+  bool quoted = false;
+  bool escaped = false;
+  for (char c : text) {
+    if (quoted) {
+      if (escaped) {
+        escaped = false;
+      } else if (c == '\\') {
+        escaped = true;
+      } else if (c == '"') {
+        quoted = false;
+      }
+    } else if (c == '"') {
+      quoted = true;
+    } else if (c == '{' || c == '[') {
+      if (++depth > 32) {
+        return {"invalid_request", "Nesting limit exceeded"};
+      }
+    } else if (c == '}' || c == ']') {
+      --depth;
+    }
+  }
+  *request = Json::parse(text, nullptr, false);
+  if (!request->is_object() || !request->contains("id") ||
+      !IsId((*request)["id"]) || !request->contains("method") ||
+      !(*request)["method"].is_string() ||
+      (request->contains("params") && !(*request)["params"].is_object()) ||
+      (request->contains("params_ref") && !IsId((*request)["params_ref"]))) {
+    return {"invalid_request",
+            "Expected id, symbolic method, and object params"};
+  }
+  if (request->contains("params") && request->contains("params_ref")) {
+    return {"invalid_request", "Use params or params_ref, not both"};
+  }
+  for (auto it = request->begin(); it != request->end(); ++it) {
+    if (it.key() != "id" && it.key() != "method" && it.key() != "params" &&
+        it.key() != "params_ref") {
+      return {"invalid_request", "Unknown envelope field"};
+    }
+  }
+  return {};
+}
+Json Error(const std::string& id, const Status& status) {
+  return {{"id", id},
+          {"type", "error"},
+          {"error", {{"code", status.code}, {"message", status.message}}}};
+}
+Json Result(const std::string& id, const Json& value) {
+  return {{"id", id}, {"type", "result"}, {"result", value}};
+}
+Status WriteAtomic(const std::string& path, const std::string& data) {
+  const std::string temporary = path + ".tmp";
+  int fd = open(temporary.c_str(), O_CREAT | O_TRUNC | O_WRONLY, 0600);
+  if (fd < 0) {
+    return {"storage_error", "Cannot open journal file"};
+  }
+  bool ok = WriteAll(fd, data) && fsync(fd) == 0;
+  if (close(fd) != 0) {
+    ok = false;
+  }
+  if (!ok || rename(temporary.c_str(), path.c_str()) != 0) {
+    return {"storage_error", "Cannot commit journal file"};
+  }
+  int directory = open(ParentDirectory(path).c_str(), O_RDONLY);
+  ok = directory >= 0 && fsync(directory) == 0;
+  if (directory >= 0) {
+    close(directory);
+  }
+  return ok ? Status{}
+            : Status{"storage_error", "Cannot sync journal directory"};
+}
+Spool::Spool(std::string path, std::string request_id, std::size_t limit)
+    : path_(std::move(path)), id_(std::move(request_id)), limit_(limit) {
+  fd_ = open(path_.c_str(), O_CREAT | O_TRUNC | O_WRONLY, 0600);
+  if (fd_ < 0) {
+    status_ = {"storage_error", "Cannot create response spool"};
+  }
+}
+Spool::~Spool() {
+  if (fd_ >= 0) {
+    close(fd_);
+  }
+}
+bool Spool::Write(Json frame, bool terminal) {
+  frame["seq"] = seq_;
+  std::string text =
+      frame.dump(-1, ' ', false, Json::error_handler_t::replace) + "\n";
+  if (text.size() > Limits::kFrameBytes ||
+      (!terminal && bytes_ + text.size() + 1024 > limit_)) {
+    status_ = {"quota_exceeded", "Response spool or record limit exceeded"};
+    return false;
+  }
+  if (fd_ < 0 || !WriteAll(fd_, text)) {
+    status_ = {"storage_error", "Response spool write failed"};
+    return false;
+  }
+  bytes_ += text.size();
+  ++seq_;
+  return true;
+}
+bool Spool::Add(const Json& item) {
+  if (!status_.ok()) {
+    return false;
+  }
+  if (!Write({{"id", id_}, {"type", "chunk"}, {"items", Json::array({item})}},
+             false)) {
+    return false;
+  }
+  ++items_;
+  return true;
+}
+Status Spool::Finish(const Status& status) {
+  if (status_.code == "storage_error") {
+    return status_;
+  }
+  Status terminal = status_.ok() ? status : status_;
+  Json frame = terminal.ok() ? Json{{"id", id_},
+                                    {"type", "complete"},
+                                    {"chunks", seq_},
+                                    {"items", items_}}
+                             : Error(id_, terminal);
+  if (!Write(frame, true) || fsync(fd_) != 0) {
+    return {"storage_error", "Cannot persist response"};
+  }
+  return {};
+}
+Status Spool::Single(const Json& result) {
+  if (!Write(result, false)) {
+    return Finish(status_);
+  }
+  if (fsync(fd_) != 0) {
+    return {"storage_error", "Cannot persist response"};
+  }
+  return {};
+}
+}  // namespace vpp_json

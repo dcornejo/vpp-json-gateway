@@ -1,0 +1,9 @@
+PASS exclusive Redis namespace ownership
+PASS registration and capability discovery
+PASS symbolic mutation, validation and retained replay
+PASS multi-frame dump, sequence integrity and slow-client isolation
+PASS large upload, checksum commit, session isolation and params_ref
+PASS conflicting IDs and malformed envelopes
+PASS durable session/transfer recovery and uncertain-operation recovery
+PASS C++ client registration and retry
+All Redis integration checks passed
